@@ -955,18 +955,18 @@ export class NodeTools implements ToolExecutor {
         return { value: result, warning };
     }
 
-    // Cocos 的 scene:set-property 對 cc.Vec3 屬性期望「每個軸自身是一個 dump」：
-    //   { type: 'cc.Vec3', value: { x: { value: N }, y: { value: N }, z: { value: N } } }
-    // 編輯器處理時會對每個軸執行 `'value' in axis`，故軸必須是物件而非純數字，
-    // 否則拋出 "Cannot use 'in' operator to search for 'value' in <number>"。
+    // Cocos 的 scene:set-property 對 cc.Vec3 屬性的正確 dump 格式為：
+    //   { type: 'cc.Vec3', value: { x: N, y: N, z: N } }   // 各軸為「純數字」
+    // 與 query-node 回傳的 dump 結構對稱（getNodeInfo 取 dump.position.value 即得純數字）。
+    // 兩個易踩的錯：
+    //   (1) 省略 `type`：編輯器無法解析 Vec3 路徑，會對各軸做 `'value' in axis`，
+    //       軸為純數字時拋 "Cannot use 'in' operator to search for 'value' in <number>"。
+    //   (2) 把各軸包成 { value: N }：可避開 (1) 的例外，但包裝物件會被原樣存入節點，
+    //       序列化成 "x": { "value": N }，重載後退化為 0（即 Bug #1 的損毀現象）。
     private buildVec3Dump(vec: { x: number; y: number; z: number }): any {
         return {
             type: 'cc.Vec3',
-            value: {
-                x: { value: vec.x },
-                y: { value: vec.y },
-                z: { value: vec.z }
-            }
+            value: { x: vec.x, y: vec.y, z: vec.z }
         };
     }
 
