@@ -208,22 +208,42 @@ asset 分支未針對「陣列值」做展開：直接把整個傳入值（陣�
 - **Bug #1**：用 `set_node_transform` 設定任一節點 scale 後，檢查 `assets/scene/*.scene` 中該節點 `_lscale`，應為 `"x": 0.733`（純數字）而非 `"x": { "value": 0.733 }`；Inspector 的 Scale 不應為 0。
 - **Bug #2 / #3**：以物件值（非字串）呼叫 `set_component_property` 設定 `color` / `contentSize`，應成功而非回報格式錯誤。
 
-## 上游修正狀態（cocoscratorMCP repo，2026-06-30）
+## 上游修正狀態（CocosMCP repo，2026-06-30）
 
-> 已在 `cocos-mcp-server` 原始碼（`source/tools/*.ts`）統一修正並重新 `npm run build`。
+> 已在 `cocos-mcp-server` 原始碼（`source/tools/*.ts`）統一修正並重新 `npm run build`，且**逐一以 MCP 工具實測 + 讀磁碟序列化驗證**。原始碼已提交至 `https://github.com/Tzuhuanhsu/CocosMCP.git`。
 
 | # | Bug | 狀態 | 修正內容 |
 |---|-----|------|----------|
-| 1 | Vec3 多包一層 `{value}` | ✅ 此版已正確 | `source/tools/node-tools.ts` `setNodeTransform()` 已用單層 `dump:{ value:{x,y,z} }`（純數字，經 `normalizeTransformValue` 產生），無需再改 |
-| 2 | `color` RGBA 物件被拒 | ✅ 已修 | 新增 `normalizeStructuredValue()`，進入 switch 前把 JSON 字串還原為物件（hex 字串維持原樣交 `parseColorString`） |
-| 3 | `size`/`contentSize` 物件被拒 | ✅ 已修 | 同 #2，`size`/`vec2`/`vec3` 等結構型別字串值統一先 `JSON.parse` |
-| 4 | asset 陣列塞進單一 `__uuid__` | ✅ 已修 | 新增 `assetArray`/`spriteFrameArray`/`prefabArray` 三型別：switch 逐元素展開為 `{uuid}`，dump 分支以陣列＋element asset type 設定；schema enum/說明同步補上 |
+| 1 | Vec3 transform dump 格式 | ✅ 已修+已驗 | `source/tools/node-tools.ts` 新增 `buildVec3Dump()`，三處 dump 改用 `{ type:'cc.Vec3', value:{ x, y, z } }`（**帶 `type` + 純數字軸**）。詳見下方「Bug #1 正解」 |
+| 2 | `color` RGBA 物件被拒 | ✅ 已修+已驗 | 新增 `normalizeStructuredValue()`，進入 switch 前把 JSON 字串還原為物件（hex 字串維持原樣交 `parseColorString`） |
+| 3 | `size`/`contentSize` 物件被拒 | ✅ 已修+已驗 | 同 #2，`size`/`vec2`/`vec3` 等結構型別字串值統一先 `JSON.parse` |
+| 4 | asset 陣列塞進單一 `__uuid__` | ✅ 已修+已驗 | 新增 `assetArray`/`spriteFrameArray`/`prefabArray` 三型別；dump 改為 `{ type, isArray:true, value:[ { type, value:{ uuid } }, ... ] }`（**每元素為獨立 sub-dump**） |
+
+### Bug #1 正解（重要）
+
+此 Cocos 版本（3.8.x）的 `scene:set-property` 對 cc.Vec3 屬性，正確 dump 為：
+
+```js
+dump: { type: 'cc.Vec3', value: { x: 120, y: -45, z: 0 } }   // 各軸純數字
+```
+
+與 `query-node` 回傳結構對稱（正常節點的 `dump.position.value = { x:N, y:N, z:N }`）。兩個曾踩過的錯誤寫法：
+
+- **漏 `type`**（`{ value:{x,y,z} }`）：編輯器無法解析 Vec3 路徑，對各軸做 `'value' in axis`，純數字軸拋 `Cannot use 'in' operator to search for 'value' in <number>`。
+- **把軸包成 `{ value:N }`**：避開上面的例外，但包裝物件被原樣存入節點，序列化成 `"x": { "value": N }`，重載後退化為 0（即本文件最初記錄的 Bug #1 損毀現象）。
+
+> 修正後實測：set position/rotation/scale → 存檔 → 讀磁碟，`_lpos`/`_lscale` 為純數字、`_lrot` 為正確 Quat、`_euler.z` 正確，無 `{value:N}` 殘留。
+
+### 已知殘留（非阻斷）
+
+- Bug #4 設定陣列成功且序列化正確，但回傳 `changeVerified: false`——`verifyPropertyChange` 尚未對陣列屬性做逐元素比對（僅驗證旗標誤報，寫入本身正確）。屬後續可改善項。
 
 修改檔案：
-- `source/tools/component-tools.ts`（新增 `normalizeStructuredValue`、asset 陣列 case 與 dump 分支、schema enum/說明）
-- 重新編譯 → `dist/tools/component-tools.js`
+- `source/tools/node-tools.ts`（新增 `buildVec3Dump()`、三處 transform dump 改用之）
+- `source/tools/component-tools.ts`（`normalizeStructuredValue`、asset 陣列 case 與 dump 分支、schema enum/說明）
+- 重新編譯 → `dist/tools/*.js`
 
-⚠️ 套用方式：覆蓋目標專案 `extensions/cocos-mcp-server/dist/` 後，於 Cocos 編輯器**重載擴充套件**（或重啟編輯器）即生效。
+⚠️ 套用方式：覆蓋目標專案 `extensions/cocos-mcp-server/dist/` 後，於 Cocos 編輯器**重載擴充套件**（或重啟編輯器）即生效。改 `dist` 後若不重載，執行中的 server 仍跑舊碼。
 
 ---
 
