@@ -1070,14 +1070,24 @@ export class ComponentTools implements ToolExecutor {
                         elementAssetType = 'cc.AudioClip';
                     }
 
-                    console.log(`[ComponentTools] Setting asset array (${elementAssetType}):`, processedValue);
+                    // Cocos set-property 對陣列屬性期望的 dump 結構：
+                    //   { type, isArray: true, value: [ { type, value: { uuid } }, ... ] }
+                    // 每個元素本身亦為一個 dump（含自己的 value/type），不可只給 { uuid }，
+                    // 否則編輯器讀 element.value.uuid 時 element.value 為 undefined 而報錯。
+                    const elementDumps = processedValue.map((item: any) => ({
+                        type: elementAssetType,
+                        value: { uuid: (item && typeof item === 'object') ? (item.uuid || item.__uuid__ || '') : item }
+                    }));
+
+                    console.log(`[ComponentTools] Setting asset array (${elementAssetType}):`, elementDumps);
 
                     await Editor.Message.request('scene', 'set-property', {
                         uuid: nodeUuid,
                         path: propertyPath,
                         dump: {
-                            value: processedValue, // [{uuid: "..."}, ...]
-                            type: elementAssetType
+                            type: elementAssetType,
+                            isArray: true,
+                            value: elementDumps
                         }
                     });
                 } else if (propertyType === 'colorArray' && Array.isArray(processedValue)) {

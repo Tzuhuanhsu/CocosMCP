@@ -774,7 +774,7 @@ export class NodeTools implements ToolExecutor {
                         Editor.Message.request('scene', 'set-property', {
                             uuid: uuid,
                             path: 'position',
-                            dump: { value: normalizedPosition.value }
+                            dump: this.buildVec3Dump(normalizedPosition.value)
                         })
                     );
                     updates.push('position');
@@ -790,7 +790,7 @@ export class NodeTools implements ToolExecutor {
                         Editor.Message.request('scene', 'set-property', {
                             uuid: uuid,
                             path: 'rotation',
-                            dump: { value: normalizedRotation.value }
+                            dump: this.buildVec3Dump(normalizedRotation.value)
                         })
                     );
                     updates.push('rotation');
@@ -806,7 +806,7 @@ export class NodeTools implements ToolExecutor {
                         Editor.Message.request('scene', 'set-property', {
                             uuid: uuid,
                             path: 'scale',
-                            dump: { value: normalizedScale.value }
+                            dump: this.buildVec3Dump(normalizedScale.value)
                         })
                     );
                     updates.push('scale');
@@ -953,6 +953,21 @@ export class NodeTools implements ToolExecutor {
         }
         
         return { value: result, warning };
+    }
+
+    // Cocos 的 scene:set-property 對 cc.Vec3 屬性期望「每個軸自身是一個 dump」：
+    //   { type: 'cc.Vec3', value: { x: { value: N }, y: { value: N }, z: { value: N } } }
+    // 編輯器處理時會對每個軸執行 `'value' in axis`，故軸必須是物件而非純數字，
+    // 否則拋出 "Cannot use 'in' operator to search for 'value' in <number>"。
+    private buildVec3Dump(vec: { x: number; y: number; z: number }): any {
+        return {
+            type: 'cc.Vec3',
+            value: {
+                x: { value: vec.x },
+                y: { value: vec.y },
+                z: { value: vec.z }
+            }
+        };
     }
 
     private async deleteNode(uuid: string): Promise<ToolResponse> {
