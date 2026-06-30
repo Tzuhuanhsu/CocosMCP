@@ -23,6 +23,7 @@
 | 2 | `color` 實際只接受 hex 字串，RGBA 物件被拒 | 🟠 Medium | 與工具說明（宣稱支援物件）不符，誤導呼叫端 |
 | 3 | `size` / `contentSize` 物件值被拒 | 🟠 Medium | 無法透過 `set_component_property` 設定 UITransform 尺寸 |
 | 4 | `set_component_property` 設定 **asset 陣列**時，整個陣列被塞進單一 `__uuid__` | 🟠 Medium | 無法設定 `SpriteFrame[]` / `Node[]` / 任意 asset 陣列型別的屬性 |
+| 5 | `instantiate_prefab` 未傳 `type:'cc.Prefab'`，建立出**未連結**預製體的普通節點（`_prefab` 為 null） | 🟠 Medium | 實例化的節點與 prefab 無雙向連結，無法 revert/同步 prefab 更新 |
 
 ---
 
@@ -244,6 +245,74 @@ dump: { type: 'cc.Vec3', value: { x: 120, y: -45, z: 0 } }   // 各軸純數字
 - 重新編譯 → `dist/tools/*.js`
 
 ⚠️ 套用方式：覆蓋目標專案 `extensions/cocos-mcp-server/dist/` 後，於 Cocos 編輯器**重載擴充套件**（或重啟編輯器）即生效。改 `dist` 後若不重載，執行中的 server 仍跑舊碼。
+
+---
+
+## 🟠 Bug #5（Medium）— `instantiate_prefab` 建立未連結的節點（`_prefab` 為 null）
+
+### 問題位置
+`source/tools/prefab-tools.ts` — `instantiatePrefab()`（對應 `dist/tools/prefab-tools.js`）。
+
+### 現況程式碼（錯誤）
+```ts
+const createNodeOptions: any = { assetUuid: assetInfo.uuid };   // ← 只有 assetUuid，缺 type
+// ...
+if (args.position) { createNodeOptions.dump = { position: { value: args.position } }; } // dump 在 create-node 未被使用
+```
+
+### 根因
+編輯器 `scene` 的 `create-node` 訊息由 `cce.Node.createNodeFromAsset(parent, assetUuid, options)` 處理，內部以 `switch(options.type)` 決定行為；唯有 `case 'cc.Prefab'` 會呼叫 `cce.Prefab.createNodeFromPrefabAsset(asset)` 建立帶 `_prefab.instance` 的**連結實例**。只傳 `assetUuid` 而**不帶 `type`**會落入預設分支，產生未連結的普通節點，存檔後 `_prefab` 為 `null`。
+
+> 旁證：原始碼中的 `establishPrefabConnection()` / `manuallyEstablishPrefabConnection()` 為死碼，且呼叫 `connect-prefab-instance`、`set-prefab-connection`、`apply-prefab-link` 等**不存在**的 scene 訊息（比對 `@cocos/creator-types` 的 scene `message.d.ts`，prefab 相關僅 `create-node`、`restore-prefab`）。
+
+### 修法（已套用）
+於 `create-node` options 補上 `type: 'cc.Prefab'`，並把位置改用標準 `position` 欄位（`dump` 在此 message 未被使用）：
+```ts
+const createNodeOptions: any = { assetUuid: assetInfo.uuid, type: 'cc.Prefab' };
+if (args.position) { createNodeOptions.position = args.position; }
+```
+此法重用編輯器原生管線（場景註冊、undo、metrics），不需手動拼 `PrefabInfo`/`PrefabInstance`。
+
+### 驗證（2026-06-30，以 `assets/prefabs/SpriteFrameAnimTest.prefab` 實測）
+- 引擎內 `cce.Prefab.createNodeFromPrefabAsset(asset)` 產生節點 `_prefab.instance` 已設定、`_prefab.asset` 指向 prefab uuid。
+- 修正後 `instantiate_prefab` → 存檔 → 讀磁碟：節點序列化出 `cc.Node._prefab → cc.PrefabInfo{instance, asset} → cc.PrefabInstance{fileId}`，位置以 `CCPropertyOverrideInfo(['_lpos'])` 正確保存。
+
+### 附帶修正
+- `debug_execute_script` 原呼叫不存在的 scene script（`name:'console', method:'eval'`）而恆失敗；已改為呼叫本套件 scene script 新增的 `executeScript`（`source/scene.ts`，於 `package.json` 的 `scene.methods` 登錄），可在引擎行程內執行任意 JS 以供診斷。
+- 移除 `prefab-tools.ts` 中一批死碼（`establishPrefabConnection` / `manuallyEstablishPrefabConnection` / `readPrefabFile` / `tryCreateNodeWithPrefab` / `tryAlternativeInstantiateMethods` / `getAssetInfo` / `createNode` / `applyPrefabToNode`），它們無任何呼叫端，且呼叫不存在的 scene 訊息。
+
+---
+
+## 🟠 Bug #6（Medium）— 手刻 prefab 把自訂腳本元件存成類別名稱，導致 `cc.MissingScript`
+
+### 問題位置
+`source/tools/prefab-tools.ts` — `createStandardPrefabContent()` / `createComponentData()`，第 **~1537/1550** 行：
+```ts
+let componentType = componentData.type || componentData.__type__ || 'cc.Component';
+// ...
+"__type__": componentType,   // 自訂腳本得到可讀類名 "SpriteFrameAnimation"
+```
+
+### 根因
+Cocos 序列化自訂腳本元件時，`__type__` 必須是該類別的**序列化 cid**（由腳本 uuid 壓縮而來），而非 `@ccclass` 的可讀名稱。反序列化以 `getClassById(cid)` 解析；存成可讀名稱（`"SpriteFrameAnimation"`）會解析失敗 → `cc.MissingScript`。
+- 實測：類別已註冊（`js.getClassByName('SpriteFrameAnimation')` 有值），其 cid 為 `d6e8dRyywVD86wJKSbTraqq`（對應腳本 uuid `d6e8d472-cb05-43f3-ac09-2926d3adaaaa`）。
+
+### 暫時修法（已套用於既有 prefab）
+手動把 `assets/prefabs/SpriteFrameAnimTest.prefab` 內 `"__type__": "SpriteFrameAnimation"` 改為 `"__type__": "d6e8dRyywVD86wJKSbTraqq"`，`reimport_asset` 後實測：元件解析為 `SpriteFrameAnimation`（非 MissingScript），場景內 2 個實例亦正常。
+
+### 根本修法（已實作，2026-06-30）
+`createStandardPrefabContent` 整條手刻序列化是**有損且脆弱**的（除 cid 錯誤外，還遺失 `spriteFrame`/`contentSize`/各 `@property` 值、`contentSize` 退回 100×100）。已改用編輯器原生路徑取代：
+
+- `source/scene.ts` 的 `createPrefabFromNode(nodeUuid, prefabPath)` 改為兩步原生流程：
+  ```ts
+  const prefabUuid = await cce.Prefab.createPrefabAssetFromNode(nodeUuid, prefabPath); // 原生序列化
+  const asset = await loadAny({ uuid: prefabUuid });
+  await cce.Prefab.linkNodeWithPrefabAsset(nodeUuid, asset);                           // 来源节点转连结实例
+  ```
+  （節點可能在 Canvas 之下，故以**遞迴**查找節點，非 `scene.getChildByUuid`——後者只查直接子節點。）
+- `source/tools/prefab-tools.ts` 的 `createPrefab` 改為透過 `execute-scene-script` 呼叫上述方法，並**刪除 51 個**手刻序列化死碼方法（`createStandardPrefabContent`/`createComponentObject`/`uuidToCompressedId`/各 asset-db 輔助等），檔案 2856 → 791 行。
+
+**驗證（2026-06-30）**：以帶 Sprite(指定 spriteFrame)+自訂 contentSize 222×111+`SpriteFrameAnimation`(interval 0.25/loop false/playOnLoad false) 的節點建 prefab，讀磁碟確認：腳本 `__type__` 為正確 cid `d6e8dRyywVD86wJKSbTraqq`、spriteFrame uuid 保留、contentSize 222×111 保留、三個 @property 值保留、來源節點 `_prefab.instance` 已設定。三個問題（cid／屬性保留／來源連結）一次解決。
 
 ---
 

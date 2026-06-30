@@ -324,33 +324,65 @@ export const methods: { [key: string]: (...any: any) => any } = {
     },
 
     /**
-     * Create prefab from node
+     * Create a prefab asset from a scene node, then convert that node into a
+     * linked prefab instance — mirroring the editor's "drag node to Assets".
+     *
+     * Uses the engine-native scene facade so the prefab is serialized correctly
+     * (custom-script cid, all @property values, contentSize, sprite frames are
+     * preserved) and the source node ends up with a populated `_prefab.instance`.
+     * Must run in the scene process; `cce.Prefab` is only available here.
      */
-    createPrefabFromNode(nodeUuid: string, prefabPath: string) {
+    async createPrefabFromNode(nodeUuid: string, prefabPath: string) {
         try {
-            const { director, instantiate } = require('cc');
+            const cc = require('cc');
+            const { director, assetManager } = cc;
+            const cce = (globalThis as any).cce;
+
             const scene = director.getScene();
             if (!scene) {
                 return { success: false, error: 'No active scene' };
             }
-
-            const node = scene.getChildByUuid(nodeUuid);
+            // 节点可能位于场景深层（如 Canvas 之下），getChildByUuid 只查直接子节点，需递归查找
+            const findNode = (n: any): any => {
+                if (n.uuid === nodeUuid) return n;
+                for (const child of n.children) {
+                    const found = findNode(child);
+                    if (found) return found;
+                }
+                return null;
+            };
+            const node = findNode(scene);
             if (!node) {
                 return { success: false, error: `Node with UUID ${nodeUuid} not found` };
             }
+            if (!cce || !cce.Prefab || typeof cce.Prefab.createPrefabAssetFromNode !== 'function') {
+                return { success: false, error: 'cce.Prefab.createPrefabAssetFromNode 不可用（需在 scene 进程执行）' };
+            }
 
-            // 注意：这里只是一个模拟实现，因为运行时环境下无法直接创建预制体文件
-            // 真正的预制体创建需要Editor API支持
+            // 1. 由节点生成 prefab 资产（引擎原生序列化，返回新资产 uuid）
+            const prefabUuid = await cce.Prefab.createPrefabAssetFromNode(nodeUuid, prefabPath);
+            if (!prefabUuid) {
+                return { success: false, error: '创建预制体资产失败：createPrefabAssetFromNode 未返回 uuid' };
+            }
+
+            // 2. 载入资产并把来源节点连结为预制体实例（_prefab.instance）
+            const asset = await new Promise<any>((resolve, reject) => {
+                assetManager.loadAny({ uuid: prefabUuid }, (err: any, res: any) => err ? reject(err) : resolve(res));
+            });
+            await cce.Prefab.linkNodeWithPrefabAsset(nodeUuid, asset);
+
             return {
                 success: true,
                 data: {
-                    prefabPath: prefabPath,
+                    prefabUuid,
+                    prefabPath,
                     sourceNodeUuid: nodeUuid,
+                    linked: !!(node._prefab && node._prefab.instance),
                     message: `Prefab created from node '${node.name}' at ${prefabPath}`
                 }
             };
         } catch (error: any) {
-            return { success: false, error: error.message };
+            return { success: false, error: error.message, stack: error.stack };
         }
     },
 
@@ -430,6 +462,27 @@ export const methods: { [key: string]: (...any: any) => any } = {
             return { success: true, message: `Component property '${property}' updated successfully` };
         } catch (error: any) {
             return { success: false, error: error.message };
+        }
+    },
+
+    /**
+     * Execute arbitrary JavaScript in the scene (engine) process.
+     * The script runs as the body of an async function and may use `return`.
+     * Available in scope: `cc` (engine module), `director`, `Editor`, and the
+     * scene facade global `cce` when present. Intended for diagnostics and
+     * advanced operations that require direct engine access.
+     */
+    async executeScript(script: string) {
+        try {
+            const cc = require('cc');
+            const { director } = cc;
+            const cce = (globalThis as any).cce;
+            const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+            const fn = new AsyncFunction('cc', 'director', 'cce', 'Editor', script);
+            const result = await fn(cc, director, cce, (globalThis as any).Editor);
+            return { success: true, data: { result } };
+        } catch (error: any) {
+            return { success: false, error: error.message, stack: error.stack };
         }
     }
 };
