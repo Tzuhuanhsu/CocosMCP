@@ -265,7 +265,36 @@ claude mcp add --transport http cocos-creator http://127.0.0.1:3000/mcp（使用
 
 ## 安装说明
 
-### 1. 复制插件文件
+> **两种安装方式**：若你拿到的是 `output/` 产出的**预打包免安装版**（不含 `source/` 源码、已内置 `dist/` 与 `node_modules/`），请看 **A. 预打包版**；若你拿到的是完整源码仓库，请看 **B. 源码版**。
+
+### A. 预打包版（免安装，推荐给使用者）
+
+此版本已完成编译并内置依赖，可直接使用，**无需 `npm install` 或 `npm run build`**：
+
+1. 将整个 `cocos-mcp-server` 文件夹复制到目标项目的 `extensions/` 目录：
+
+   ```
+   您的项目/
+   ├── assets/
+   ├── extensions/
+   │   └── cocos-mcp-server/     <- 将整包放在这里（已含 dist/、node_modules/）
+   │       ├── dist/
+   │       ├── node_modules/
+   │       ├── static/
+   │       ├── i18n/
+   │       ├── package.json
+   │       └── ...
+   └── ...
+   ```
+
+2. 重启 Cocos Creator（或在扩展管理器中刷新扩展）。
+3. 打开 `扩展 > Cocos MCP Server` 控制面板即可使用（启动服务器等操作见下方「使用方法」）。
+
+> 若编辑器提示需要依赖，再执行一次 `cd extensions/cocos-mcp-server && npm install` 即可；此包已附 `package-lock.json` 确保依赖一致。
+
+### B. 源码版
+
+#### 1. 复制插件文件
 
 将整个 `cocos-mcp-server` 文件夹复制到您的 Cocos Creator 项目的 `extensions` 目录中，您也可以直接在扩展管理器中导入项目：
 
@@ -282,20 +311,20 @@ claude mcp add --transport http cocos-creator http://127.0.0.1:3000/mcp（使用
 └── ...
 ```
 
-### 2. 安装依赖
+#### 2. 安装依赖
 
 ```bash
 cd extensions/cocos-mcp-server
 npm install
 ```
 
-### 3. 构建插件
+#### 3. 构建插件
 
 ```bash
 npm run build
 ```
 
-### 4. 启用插件
+#### 4. 启用插件
 
 1. 重启 Cocos Creator 或刷新扩展
 2. 插件将出现在扩展菜单中
