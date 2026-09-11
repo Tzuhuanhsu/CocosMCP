@@ -2,13 +2,16 @@
     "$schema": "./@types/schema/package/index.json",
     "package_version": 2,
     "name": "cocos-mcp-server",
-    "version": "1.4.0",
+    "version": "2.0.0",
     "author": "LiDaxian",
     "editor": ">=3.8.3",
     "scripts": {
         "preinstall": "node ./scripts/preinstall.js",
-        "build": "tsc",
+        "build": "tsc && node inspector/build.js",
+        "build:server": "tsc",
+        "build:inspector": "node inspector/build.js",
         "watch": "tsc -w",
+        "typecheck:inspector": "tsc -p inspector/tsconfig.json",
         "pack": "node ./scripts/pack-dist.js"
     },
     "description": "i18n:cocos-mcp-server.description",
@@ -23,6 +26,7 @@
         "@types/fs-extra": "^9.0.5",
         "@types/node": "^18.17.1",
         "@types/uuid": "^9.0.8",
+        "esbuild": "^0.28.2",
         "typescript": "^5.8.2"
     },
     "panels": {
@@ -45,17 +49,42 @@
                 "path": "i18n:menu.extension/Cocos MCP Server",
                 "label": "i18n:cocos-mcp-server.open_panel",
                 "message": "open-panel"
+            },
+            {
+                "path": "i18n:menu.extension/Cocos MCP Server",
+                "label": "i18n:cocos-mcp-server.start_server",
+                "message": "start-server"
+            },
+            {
+                "path": "i18n:menu.extension/Cocos MCP Server",
+                "label": "i18n:cocos-mcp-server.stop_server",
+                "message": "stop-server"
+            },
+            {
+                "path": "i18n:menu.extension/Cocos MCP Server",
+                "label": "i18n:cocos-mcp-server.inspector_preview",
+                "message": "previewMode"
+            },
+            {
+                "path": "i18n:menu.extension/Cocos MCP Server",
+                "label": "i18n:cocos-mcp-server.inspector_build_mobile",
+                "message": "buildMobileMode"
+            },
+            {
+                "path": "i18n:menu.extension/Cocos MCP Server",
+                "label": "i18n:cocos-mcp-server.inspector_build_desktop",
+                "message": "buildDesktopMode"
+            },
+            {
+                "path": "i18n:menu.extension/Cocos MCP Server",
+                "label": "i18n:cocos-mcp-server.inspector_custom_page",
+                "message": "openCustomPage"
             }
         ],
         "messages": {
             "open-panel": {
                 "methods": [
                     "openPanel"
-                ]
-            },
-            "open-tool-manager": {
-                "methods": [
-                    "openToolManager"
                 ]
             },
             "start-server": {
@@ -88,54 +117,24 @@
                     "getServerSettings"
                 ]
             },
-            "getToolManagerState": {
+            "previewMode": {
                 "methods": [
-                    "getToolManagerState"
+                    "previewMode"
                 ]
             },
-            "createToolConfiguration": {
+            "buildMobileMode": {
                 "methods": [
-                    "createToolConfiguration"
+                    "buildMobileMode"
                 ]
             },
-            "updateToolConfiguration": {
+            "buildDesktopMode": {
                 "methods": [
-                    "updateToolConfiguration"
+                    "buildDesktopMode"
                 ]
             },
-            "deleteToolConfiguration": {
+            "openCustomPage": {
                 "methods": [
-                    "deleteToolConfiguration"
-                ]
-            },
-            "setCurrentToolConfiguration": {
-                "methods": [
-                    "setCurrentToolConfiguration"
-                ]
-            },
-            "updateToolStatus": {
-                "methods": [
-                    "updateToolStatus"
-                ]
-            },
-            "updateToolStatusBatch": {
-                "methods": [
-                    "updateToolStatusBatch"
-                ]
-            },
-            "exportToolConfiguration": {
-                "methods": [
-                    "exportToolConfiguration"
-                ]
-            },
-            "importToolConfiguration": {
-                "methods": [
-                    "importToolConfiguration"
-                ]
-            },
-            "getEnabledTools": {
-                "methods": [
-                    "getEnabledTools"
+                    "openCustomPage"
                 ]
             }
         },

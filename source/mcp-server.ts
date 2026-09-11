@@ -1,5 +1,7 @@
 import * as http from 'http';
+import * as fs from 'fs';
 import * as url from 'url';
+import { AddressInfo } from 'net';
 import { v4 as uuidv4 } from 'uuid';
 import { MCPServerSettings, ServerStatus, MCPClient, ToolDefinition } from './types';
 import { SceneTools } from './tools/scene-tools';
@@ -16,6 +18,13 @@ import { SceneViewTools } from './tools/scene-view-tools';
 import { ReferenceImageTools } from './tools/reference-image-tools';
 import { AssetAdvancedTools } from './tools/asset-advanced-tools';
 import { ValidationTools } from './tools/validation-tools';
+import { RuntimeTools } from './tools/runtime-tools';
+
+/** Port the running server is bound to (null when stopped); read by tools that report status. */
+let activeServerPort: number | null = null;
+export function getActiveServerPort(): number | null {
+    return activeServerPort;
+}
 
 export class MCPServer {
     private settings: MCPServerSettings;
@@ -23,7 +32,6 @@ export class MCPServer {
     private clients: Map<string, MCPClient> = new Map();
     private tools: Record<string, any> = {};
     private toolsList: ToolDefinition[] = [];
-    private enabledTools: any[] = []; // 存储启用的工具列表
 
     constructor(settings: MCPServerSettings) {
         this.settings = settings;
@@ -47,6 +55,7 @@ export class MCPServer {
             this.tools.referenceImage = new ReferenceImageTools();
             this.tools.assetAdvanced = new AssetAdvancedTools();
             this.tools.validation = new ValidationTools();
+            this.tools.runtime = new RuntimeTools();
             console.log('[MCPServer] Tools initialized successfully');
         } catch (error) {
             console.error('[MCPServer] Error initializing tools:', error);
@@ -54,31 +63,36 @@ export class MCPServer {
         }
     }
 
-    public async start(): Promise<void> {
+    public async start(port: number): Promise<void> {
         if (this.httpServer) {
             console.log('[MCPServer] Server is already running');
             return;
         }
 
         try {
-            console.log(`[MCPServer] Starting HTTP server on port ${this.settings.port}...`);
-            this.httpServer = http.createServer(this.handleHttpRequest.bind(this));
+            console.log(`[MCPServer] Starting HTTP server on port ${port}...`);
+            const server = http.createServer(this.handleHttpRequest.bind(this));
 
             await new Promise<void>((resolve, reject) => {
-                this.httpServer!.listen(this.settings.port, '127.0.0.1', () => {
-                    console.log(`[MCPServer] ✅ HTTP server started successfully on http://127.0.0.1:${this.settings.port}`);
-                    console.log(`[MCPServer] Health check: http://127.0.0.1:${this.settings.port}/health`);
-                    console.log(`[MCPServer] MCP endpoint: http://127.0.0.1:${this.settings.port}/mcp`);
-                    resolve();
-                });
-                this.httpServer!.on('error', (err: any) => {
+                const onError = (err: any) => {
                     console.error('[MCPServer] ❌ Failed to start server:', err);
                     if (err.code === 'EADDRINUSE') {
-                        console.error(`[MCPServer] Port ${this.settings.port} is already in use. Please change the port in settings.`);
+                        console.error(`[MCPServer] Port ${port} is already in use (free-port lookup also failed). Set a different port in settings.`);
                     }
                     reject(err);
+                };
+                server.once('error', onError);
+                server.listen(port, '127.0.0.1', () => {
+                    server.off('error', onError);
+                    resolve();
                 });
             });
+
+            this.httpServer = server;
+            activeServerPort = (server.address() as AddressInfo).port;
+            console.log(`[MCPServer] ✅ HTTP server started successfully on http://127.0.0.1:${activeServerPort}`);
+            console.log(`[MCPServer] Health check: http://127.0.0.1:${activeServerPort}/health`);
+            console.log(`[MCPServer] MCP endpoint: http://127.0.0.1:${activeServerPort}/mcp`);
 
             this.setupTools();
             console.log('[MCPServer] 🚀 MCP Server is ready for connections');
@@ -88,50 +102,24 @@ export class MCPServer {
         }
     }
 
+    /** All tools are exposed except those listed in settings.disabledTools. */
     private setupTools(): void {
         this.toolsList = [];
-        
-        // 如果没有启用工具配置，返回所有工具
-        if (!this.enabledTools || this.enabledTools.length === 0) {
-            for (const [category, toolSet] of Object.entries(this.tools)) {
-                const tools = toolSet.getTools();
-                for (const tool of tools) {
-                    this.toolsList.push({
-                        name: `${category}_${tool.name}`,
-                        description: tool.description,
-                        inputSchema: tool.inputSchema
-                    });
-                }
-            }
-        } else {
-            // 根据启用的工具配置过滤
-            const enabledToolNames = new Set(this.enabledTools.map(tool => `${tool.category}_${tool.name}`));
-            
-            for (const [category, toolSet] of Object.entries(this.tools)) {
-                const tools = toolSet.getTools();
-                for (const tool of tools) {
-                    const toolName = `${category}_${tool.name}`;
-                    if (enabledToolNames.has(toolName)) {
-                        this.toolsList.push({
-                            name: toolName,
-                            description: tool.description,
-                            inputSchema: tool.inputSchema
-                        });
-                    }
-                }
+        const disabled = new Set(this.settings.disabledTools || []);
+
+        for (const [category, toolSet] of Object.entries(this.tools)) {
+            for (const tool of toolSet.getTools()) {
+                const toolName = `${category}_${tool.name}`;
+                if (disabled.has(toolName)) continue;
+                this.toolsList.push({
+                    name: toolName,
+                    description: tool.description,
+                    inputSchema: tool.inputSchema
+                });
             }
         }
-        
-        console.log(`[MCPServer] Setup tools: ${this.toolsList.length} tools available`);
-    }
 
-    public getFilteredTools(enabledTools: any[]): ToolDefinition[] {
-        if (!enabledTools || enabledTools.length === 0) {
-            return this.toolsList; // 如果没有过滤配置，返回所有工具
-        }
-
-        const enabledToolNames = new Set(enabledTools.map(tool => `${tool.category}_${tool.name}`));
-        return this.toolsList.filter(tool => enabledToolNames.has(tool.name));
+        console.log(`[MCPServer] Setup tools: ${this.toolsList.length} tools available` + (disabled.size ? ` (${disabled.size} disabled)` : ''));
     }
 
     public async executeToolCall(toolName: string, args: any): Promise<any> {
@@ -151,12 +139,6 @@ export class MCPServer {
     }
     public getAvailableTools(): ToolDefinition[] {
         return this.toolsList;
-    }
-
-    public updateEnabledTools(enabledTools: any[]): void {
-        console.log(`[MCPServer] Updating enabled tools: ${enabledTools.length} tools`);
-        this.enabledTools = enabledTools;
-        this.setupTools(); // 重新设置工具列表
     }
 
     public getSettings(): MCPServerSettings {
@@ -184,7 +166,12 @@ export class MCPServer {
                 await this.handleMCPRequest(req, res);
             } else if (pathname === '/health' && req.method === 'GET') {
                 res.writeHead(200);
-                res.end(JSON.stringify({ status: 'ok', tools: this.toolsList.length }));
+                res.end(JSON.stringify({
+                    status: 'ok',
+                    tools: this.toolsList.length,
+                    port: activeServerPort,
+                    project: { name: Editor.Project.name, path: Editor.Project.path, uuid: Editor.Project.uuid }
+                }));
             } else if (pathname?.startsWith('/api/') && req.method === 'POST') {
                 await this.handleSimpleAPIRequest(req, res, pathname);
             } else if (pathname === '/api/tools' && req.method === 'GET') {
@@ -243,6 +230,17 @@ export class MCPServer {
         });
     }
 
+    /** Tools that produce a PNG (e.g. runtime_capture_screenshot) expose data.imagePath; attach it as image content. */
+    private attachImageContent(content: any[], toolResult: any): void {
+        const imagePath = toolResult?.data?.imagePath;
+        if (typeof imagePath !== 'string') return;
+        try {
+            content.push({ type: 'image', data: fs.readFileSync(imagePath).toString('base64'), mimeType: 'image/png' });
+        } catch (err) {
+            console.warn('[MCPServer] Failed to attach image content:', imagePath, err);
+        }
+    }
+
     private async handleMessage(message: any): Promise<any> {
         const { id, method, params } = message;
 
@@ -257,6 +255,7 @@ export class MCPServer {
                     const { name, arguments: args } = params;
                     const toolResult = await this.executeToolCall(name, args);
                     result = { content: [{ type: 'text', text: JSON.stringify(toolResult) }] };
+                    this.attachImageContent(result.content, toolResult);
                     break;
                 case 'initialize':
                     // MCP initialization
@@ -317,6 +316,7 @@ export class MCPServer {
         if (this.httpServer) {
             this.httpServer.close();
             this.httpServer = null;
+            activeServerPort = null;
             console.log('[MCPServer] HTTP server stopped');
         }
 
@@ -326,7 +326,7 @@ export class MCPServer {
     public getStatus(): ServerStatus {
         return {
             running: !!this.httpServer,
-            port: this.settings.port,
+            port: activeServerPort ?? this.settings.port,
             clients: 0 // HTTP is stateless, no persistent clients
         };
     }
@@ -417,7 +417,7 @@ export class MCPServer {
         const sampleParams = this.generateSampleParams(schema);
         const jsonString = JSON.stringify(sampleParams, null, 2);
         
-        return `curl -X POST http://127.0.0.1:8585/api/${category}/${toolName} \\
+        return `curl -X POST http://127.0.0.1:${activeServerPort ?? '<port>'}/api/${category}/${toolName} \\
   -H "Content-Type: application/json" \\
   -d '${jsonString}'`;
     }
@@ -448,13 +448,6 @@ export class MCPServer {
         return sample;
     }
 
-    public updateSettings(settings: MCPServerSettings) {
-        this.settings = settings;
-        if (this.httpServer) {
-            this.stop();
-            this.start();
-        }
-    }
 }
 
 // HTTP transport doesn't need persistent connections

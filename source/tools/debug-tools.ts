@@ -33,7 +33,7 @@ export class DebugTools implements ToolExecutor {
         return [
             {
                 name: 'get_console_logs',
-                description: 'Get editor console logs',
+                description: 'Get editor console logs (editor process only; for play-mode game logs use runtime_get_console_logs)',
                 inputSchema: {
                     type: 'object',
                     properties: {
