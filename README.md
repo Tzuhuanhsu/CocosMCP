@@ -19,6 +19,15 @@
 
 ## 更新日志
 
+## 🧩 v2.0.0（2026-09-11）— 單一擴充套件、零操作啟動、內建 Runtime Inspector
+
+- **零操作啟動**：`autoStart` 預設開啟；port 由專案 uuid 雜湊出一個穩定值（20000–39999），被占用時以 `Editor.Network.getFreePort` 自動改用空 port；啟動後自動回寫 `settings/mcp-server.json` 與專案 `.mcp.json`（`mcpServers.cocos-mcp`），Claude Code 開專案即連得上。`GET /health` 回傳 `project.{name,path,uuid}` 供客戶端核對連到的是哪個專案。
+- **移除工具管理器**：所有工具預設啟用；要隱藏個別工具改在 `settings/mcp-server.json` 的 `disabledTools: ["category_tool"]` 黑名單。面板縮為單頁（狀態／啟停／endpoint 複製／port／autoStart）。選單新增 Start Server / Stop Server。
+- **內建 Runtime Inspector（`inspector/`）**：把原本獨立的 CocosInspector 擴充套件併入本套件，使用者只需安裝一個擴充套件。選單「Cocos MCP Server → Inspector: …」開啟視覺化節點樹／屬性／DevTools 視窗；`runtime_*` 工具（status / open_inspector / eval / get_node_snapshot / get_console_logs / capture_screenshot / wait_for_condition / get_events / wait_for_event）直接在同一 process 內驅動 preview 遊戲頁，AI 可以驗證 Play 模式的執行結果。
+  - 來源說明：`inspector/` 衍生自 Cocos Store「Cocos Inspector」v1.1.2（chuan.zhang）的 TypeScript 重寫版（2026-08 反混淆重構），移除了遙測；設定檔改存 `<project>/settings/cocos-inspector.json`。
+  - 遊戲視圖預設**跟隨專案設計解析度**（`matchDesign`，解析度選單首項「Design WxH」），並在 resize 後同步 UI 相機 `orthoHeight`，修正舊版預覽畫面被放大／裁切的問題。
+  - 建置：`npm run build` = `tsc`（`source/` → `dist/`）+ `node inspector/build.js`（esbuild 五個 bundle → `inspector/dist/`）。
+
 ## 🚀 重大更新 v1.5.0（2024年7月29日）（已经在cocos 商城更新，github版本将在下个版本同步更新）
 
 cocos store：https://store.cocos.com/app/detail/7941

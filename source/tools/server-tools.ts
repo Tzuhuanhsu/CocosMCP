@@ -1,4 +1,5 @@
 import { ToolDefinition, ToolResponse, ToolExecutor } from '../types';
+import { getActiveServerPort } from '../mcp-server';
 
 export class ServerTools implements ToolExecutor {
     getTools(): ToolDefinition[] {
@@ -160,7 +161,7 @@ export class ServerTools implements ToolExecutor {
                 }
 
                 // Add additional server info
-                status.mcpServerPort = 3000; // Our MCP server port
+                status.mcpServerPort = getActiveServerPort();
                 status.editorVersion = (Editor as any).versions?.cocos || 'Unknown';
                 status.platform = process.platform;
                 status.nodeVersion = process.version;

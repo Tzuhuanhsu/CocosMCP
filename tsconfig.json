@@ -5,7 +5,10 @@
         "rootDir": "./source",
         "types": [
             "node",
-            "@cocos/creator-types/editor",
+            "@cocos/creator-types/editor"
         ]
-    }
+    },
+    "include": [
+        "source/**/*"
+    ]
 }

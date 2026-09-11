@@ -36,6 +36,7 @@ const INCLUDE_DIRS = [
     'image',       // 文件圖片
     'scripts',     // preinstall.js（package.json 的 preinstall hook 需要）
     'node_modules', // 執行期依賴，做成免安裝整包
+    'inspector',   // 運行時檢查器（index.html + dist bundles + 資源；src/ 與建置設定另行排除）
 ];
 
 // 明確排除的目錄名稱（於任何層級比對）—— 保險用，白名單本已不含這些
@@ -44,13 +45,16 @@ const EXCLUDE_DIR_NAMES = new Set([
     'examples',  // dist/examples 範例碼
     '.git',
     '.claude',
+    'src',       // inspector/src 原始碼
+    'esbuild',   // 建置工具（devDependency），執行期不需要
+    '@esbuild',
 ]);
 
 // 明確排除的副檔名（型別宣告與 sourcemap 非執行期必需，且屬「原始碼」性質）
 const EXCLUDE_EXTENSIONS = ['.ts', '.map'];
 
 // 明確排除的檔名（打包工具本身不屬於擴充套件執行內容）
-const EXCLUDE_FILE_NAMES = new Set(['pack-dist.js']);
+const EXCLUDE_FILE_NAMES = new Set(['pack-dist.js', 'build.js', 'tsconfig.json']);
 
 function shouldSkipEntry(name, fullPath) {
     const stat = fs.statSync(fullPath);

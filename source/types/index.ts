@@ -1,14 +1,18 @@
 export interface MCPServerSettings {
-    port: number;
+    /** null = choose automatically (stable per-project hash port, see port.ts) */
+    port: number | null;
     autoStart: boolean;
     enableDebugLog: boolean;
     allowedOrigins: string[];
     maxConnections: number;
+    /** Full tool names (`${category}_${name}`) to hide from clients; everything else is enabled. */
+    disabledTools: string[];
 }
 
 export interface ServerStatus {
     running: boolean;
-    port: number;
+    /** Actually bound port while running; preferred port otherwise. */
+    port: number | null;
     clients: number;
 }
 
@@ -126,31 +130,3 @@ export interface ToolExecutor {
     execute(toolName: string, args: any): Promise<ToolResponse>;
 }
 
-// 工具配置管理相关接口
-export interface ToolConfig {
-    category: string;
-    name: string;
-    enabled: boolean;
-    description: string;
-}
-
-export interface ToolConfiguration {
-    id: string;
-    name: string;
-    description?: string;
-    tools: ToolConfig[];
-    createdAt: string;
-    updatedAt: string;
-}
-
-export interface ToolManagerSettings {
-    configurations: ToolConfiguration[];
-    currentConfigId: string;
-    maxConfigSlots: number;
-}
-
-export interface ToolManagerState {
-    availableTools: ToolConfig[];
-    currentConfiguration: ToolConfiguration | null;
-    configurations: ToolConfiguration[];
-}

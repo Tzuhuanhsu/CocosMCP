@@ -1,0 +1,22 @@
+{
+    "compilerOptions": {
+        "target": "ES2020",
+        "module": "Preserve",
+        "moduleResolution": "bundler",
+        "lib": [ "ES2020", "DOM" ],
+        "strict": true,
+        "noImplicitOverride": true,
+        "noFallthroughCasesInSwitch": true,
+        "forceConsistentCasingInFileNames": true,
+        "skipLibCheck": true,
+        "noEmit": true,
+        "types": [ "node" ],
+        "paths": {
+            "@shared/*": [ "./src/shared/*" ]
+        }
+    },
+    "include": [
+        "src/**/*.ts",
+        "../node_modules/@cocos/creator-types/editor/electron.d.ts"
+    ]
+}

@@ -1,4 +1,5 @@
 import { ToolDefinition, ToolResponse, ToolExecutor } from '../types';
+import { getActiveServerPort } from '../mcp-server';
 
 export class ValidationTools implements ToolExecutor {
     getTools(): ToolDefinition[] {
@@ -256,7 +257,7 @@ export class ValidationTools implements ToolExecutor {
 
     private generateCurlCommand(jsonStr: string): string {
         const escapedJson = jsonStr.replace(/'/g, "'\"'\"'");
-        return `curl -X POST http://127.0.0.1:8585/mcp \\
+        return `curl -X POST http://127.0.0.1:${getActiveServerPort() ?? '<port>'}/mcp \\
   -H "Content-Type: application/json" \\
   -d '${escapedJson}'`;
     }
