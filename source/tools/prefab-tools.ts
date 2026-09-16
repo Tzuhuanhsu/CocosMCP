@@ -512,11 +512,24 @@ export class PrefabTools implements ToolExecutor {
 
     private async revertPrefab(nodeUuid: string): Promise<ToolResponse> {
         try {
-            // 同 apply-prefab：revertPrefab(nodeUUID) 只收节点 uuid，传物件会静默 no-op。
-            await (Editor.Message.request as any)('scene', 'revert-prefab', nodeUuid);
+            // 编辑器没有 `scene - revert-prefab` 这个 message（旧码呼叫它一律得到
+            // "Message does not exist"），必须在 scene 进程内直接呼叫 cce.Prefab.revertPrefab()，
+            // 与 create_prefab 走同一条 execute-scene-script 路径。
+            const result: any = await Editor.Message.request('scene', 'execute-scene-script', {
+                name: 'cocos-mcp-server',
+                method: 'revertPrefabInstance',
+                args: [nodeUuid]
+            });
+
+            if (!result || !result.success) {
+                const detail = result?.stack ? `${result.error}\n${result.stack}` : (result?.error || '还原预制体实例失败');
+                return { success: false, error: detail };
+            }
+
             return {
                 success: true,
-                message: 'Prefab instance reverted successfully'
+                message: 'Prefab instance reverted successfully',
+                data: result.data
             };
         } catch (err: any) {
             return { success: false, error: err.message };

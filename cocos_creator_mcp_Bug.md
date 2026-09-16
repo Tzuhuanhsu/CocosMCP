@@ -25,7 +25,8 @@
 | 4 | `set_component_property` 設定 **asset 陣列**時，整個陣列被塞進單一 `__uuid__` | 🟠 Medium | 無法設定 `SpriteFrame[]` / `Node[]` / 任意 asset 陣列型別的屬性 |
 | 5 | `instantiate_prefab` 未傳 `type:'cc.Prefab'`，建立出**未連結**預製體的普通節點（`_prefab` 為 null） | 🟠 Medium | 實例化的節點與 prefab 無雙向連結，無法 revert/同步 prefab 更新 |
 | 6 | 手刻 prefab 序列化把自訂腳本元件的 `__type__` 存成類別名稱而非 cid | 🟠 Medium | 存出的 prefab 元件解析為 `cc.MissingScript`，且屬性值大量遺失 |
-| 7 | `apply-prefab` / `revert-prefab` 傳物件而非節點 uuid 字串 | 🔴 High | `update_prefab` / `revert_prefab` 回報 success 但**完全不寫檔**，靜默 no-op，log 也看不出來 |
+| 7a | `apply-prefab` 傳物件而非節點 uuid 字串 | 🔴 High | `update_prefab` 回報 success 但**完全不寫檔**，靜默 no-op，log 也看不出來 |
+| 7b | `revert-prefab` 這個 scene message **根本不存在** | 🟠 Medium | `revert_prefab` 一直明確失敗（`Message does not exist`），從未生效；非靜默 |
 
 ---
 
@@ -318,31 +319,48 @@ Cocos 序列化自訂腳本元件時，`__type__` 必須是該類別的**序列�
 
 ---
 
-## 🔴 Bug #7（High）— `apply-prefab` / `revert-prefab` 參數形狀錯誤，回報 success 但不寫檔
+## 🔴 Bug #7（High）— `apply-prefab` 傳錯參數形狀導致假成功；`revert-prefab` message 根本不存在
+
+> ⚠️ 這是**兩個不同性質的 bug**，最初誤判為同型。`apply-prefab` 是靜默假成功；
+> `revert-prefab` 是大聲失敗（message 不存在）。修法完全不同。
 
 ### 問題位置
-`source/tools/prefab-tools.ts` — `updatePrefab()`（~438 行）與 `revertPrefab()`（~455 行）
+`source/tools/prefab-tools.ts` — `updatePrefab()` 與 `revertPrefab()`
 
 ```ts
-// 錯誤：傳物件
+// 7a 錯誤：傳物件（message 存在，但只收字串）
 Editor.Message.request('scene', 'apply-prefab', { node: nodeUuid, prefab: assetInfo.uuid });
+// 7b 錯誤：這個 message 從頭到尾就不存在
 Editor.Message.request('scene', 'revert-prefab', { node: nodeUuid });
 ```
 
-### 根因
+### 7a 根因 — `apply-prefab` 靜默假成功
 引擎端 scene facade 只收**一個節點 uuid 字串**，型別宣告可直接佐證：
 
 - `@cocos/creator-types/.../scene-facade-interface.d.ts:773` → `applyPrefab(nodeUuid: string): Promise<boolean>`
 - `@cocos/creator-types/.../cce/3d/manager/prefab/index.d.ts:52` → `applyPrefab(nodeUUID: string): Promise<boolean>`
-- 同檔 `:39` → `revertPrefab(nodeUUID: Node | string): Promise<boolean>`
 
 傳物件**不會拋錯**，promise 照樣 resolve，於是 `.then()` 無條件回 `{ success: true }`，但磁碟上的 `.prefab` 完全沒變。編輯器 project log 也沒有任何對應紀錄 —— 從 log 完全看不出來，是徹底的靜默假成功。
+
+### 7b 根因 — `revert-prefab` message 不存在
+**編輯器沒有 `scene - revert-prefab` 這個 message**，實測直接回報：
+
+```
+Message does not exist: scene - revert-prefab
+```
+
+`message.d.ts` 中 prefab 相關只宣告了 `restore-prefab` 一個，即為線索。
+注意 `cce/3d/manager/prefab/index.d.ts:39` 確實有 `revertPrefab(nodeUUID: Node | string)`，
+但那是 **scene 進程內的 manager 方法，不等於對外的 message**——只看型別宣告會誤判。
+
+這個 bug **不是靜默的**：舊碼的 `.catch()` 會如實回報上面的錯誤。因此 `prefab_revert_prefab`
+一直是明確失敗、從未生效，與 7a 的假成功性質相反。改參數形狀對它完全無效。
 
 ### 附帶陷阱：回傳值不可作為成功判準
 `cce.Prefab.applyPrefab()` **成功時也可能回傳 `false`**。本專案實測即是回 `false` 但檔案確實寫入。若修完改用回傳值判定，會從「假成功」變成「假失敗」。
 
-### 修法（已實作，2026-09-16）
-1. 兩處都改傳字串：`Editor.Message.request('scene', 'apply-prefab', nodeUuid)`
+### 7a 修法（已實作，2026-09-16）
+1. 改傳字串：`Editor.Message.request('scene', 'apply-prefab', nodeUuid)`
 2. 成功判準改為**磁碟證據**：新增 `readPrefabFileSnapshot()` / `waitForPrefabWrite()`，以 `assetInfo.file` 的 `mtimeMs` / `size` 於 apply 前後比對，輪詢間隔 `PREFAB_WRITE_POLL_INTERVAL_MS = 100`、上限 `PREFAB_WRITE_TIMEOUT_MS = 3000`（寫盤為非同步，不能立刻讀）。逾時未變動即回 `success: false`，並提示檢查節點是否為已連結的 prefab 實例。
 3. 成功時 `data` 附上 `file` / `sizeBefore` / `sizeAfter` / `mtimeAfter` 作為證據。
 
@@ -357,6 +375,26 @@ Editor.Message.request('scene', 'revert-prefab', { node: nodeUuid });
 | 修正後（傳 uuid 字串） | `false` | 4549 bytes / 247 行、mtime 更新、`BugProbeChild` 已寫入 ✅ |
 
 測試後已還原 prefab 至原始 3544 bytes / 188 行並 `reimport_asset`，場景測試節點已刪除。
+
+### 7b 修法（已實作，2026-09-16）
+既然 message 不存在，改參數形狀無用，必須繞過 message 層、走 `execute-scene-script` 進 scene 進程直接呼叫
+`cce.Prefab.revertPrefab()` —— 與 Bug #6 的 `createPrefabFromNode` 同一條路徑：
+
+1. `source/scene.ts` 新增 `revertPrefabInstance(nodeUuid)`：遞迴查找節點（可能位於 Canvas 深層）→
+   檢查 `_prefab.instance` 不為 null → 呼叫 `cce.Prefab.revertPrefab()`。
+2. `source/tools/prefab-tools.ts` 的 `revertPrefab()` 改發 `execute-scene-script`。
+3. `package.json` 的 `contributions.scene.methods` 必須登記 `revertPrefabInstance`，否則會被擋。
+
+### 7b 驗證（2026-09-16）
+instantiate → 於實例下新增子節點 `RevertProbe2` → `prefab_revert_prefab`：
+
+| 情境 | 結果 |
+|------|------|
+| 已連結實例 | `success: true`、`reverted: true`、`childCount: 0`；獨立 `get_node_info` 確認 `children: []`，子節點已還原 ✅ |
+| 未連結的普通節點 | `success: false` — `Node 'UnlinkedRevertProbe' is not a linked prefab instance (_prefab.instance is null)` ✅ |
+
+⚠️ revert **不還原實例根節點的 transform**：實測先把 position 改成 (321, 654, 0) 再 revert，
+子節點被還原但 position 保持 (321, 654, 0)。這是 Cocos 的設計，非 bug。
 
 > 回報來源：另一個 session 於 `D:\treasureofdragon\Model.Cocos`（Creator 3.8.8）踩到，重現兩次、非偶發，第一輪建的 33 個節點全部白做。本專案（Creator 3.8.3+）亦完整重現。
 
