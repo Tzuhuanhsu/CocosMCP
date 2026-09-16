@@ -24,6 +24,8 @@
 | 3 | `size` / `contentSize` 物件值被拒 | 🟠 Medium | 無法透過 `set_component_property` 設定 UITransform 尺寸 |
 | 4 | `set_component_property` 設定 **asset 陣列**時，整個陣列被塞進單一 `__uuid__` | 🟠 Medium | 無法設定 `SpriteFrame[]` / `Node[]` / 任意 asset 陣列型別的屬性 |
 | 5 | `instantiate_prefab` 未傳 `type:'cc.Prefab'`，建立出**未連結**預製體的普通節點（`_prefab` 為 null） | 🟠 Medium | 實例化的節點與 prefab 無雙向連結，無法 revert/同步 prefab 更新 |
+| 6 | 手刻 prefab 序列化把自訂腳本元件的 `__type__` 存成類別名稱而非 cid | 🟠 Medium | 存出的 prefab 元件解析為 `cc.MissingScript`，且屬性值大量遺失 |
+| 7 | `apply-prefab` / `revert-prefab` 傳物件而非節點 uuid 字串 | 🔴 High | `update_prefab` / `revert_prefab` 回報 success 但**完全不寫檔**，靜默 no-op，log 也看不出來 |
 
 ---
 
@@ -313,6 +315,50 @@ Cocos 序列化自訂腳本元件時，`__type__` 必須是該類別的**序列�
 - `source/tools/prefab-tools.ts` 的 `createPrefab` 改為透過 `execute-scene-script` 呼叫上述方法，並**刪除 51 個**手刻序列化死碼方法（`createStandardPrefabContent`/`createComponentObject`/`uuidToCompressedId`/各 asset-db 輔助等），檔案 2856 → 791 行。
 
 **驗證（2026-06-30）**：以帶 Sprite(指定 spriteFrame)+自訂 contentSize 222×111+`SpriteFrameAnimation`(interval 0.25/loop false/playOnLoad false) 的節點建 prefab，讀磁碟確認：腳本 `__type__` 為正確 cid `d6e8dRyywVD86wJKSbTraqq`、spriteFrame uuid 保留、contentSize 222×111 保留、三個 @property 值保留、來源節點 `_prefab.instance` 已設定。三個問題（cid／屬性保留／來源連結）一次解決。
+
+---
+
+## 🔴 Bug #7（High）— `apply-prefab` / `revert-prefab` 參數形狀錯誤，回報 success 但不寫檔
+
+### 問題位置
+`source/tools/prefab-tools.ts` — `updatePrefab()`（~438 行）與 `revertPrefab()`（~455 行）
+
+```ts
+// 錯誤：傳物件
+Editor.Message.request('scene', 'apply-prefab', { node: nodeUuid, prefab: assetInfo.uuid });
+Editor.Message.request('scene', 'revert-prefab', { node: nodeUuid });
+```
+
+### 根因
+引擎端 scene facade 只收**一個節點 uuid 字串**，型別宣告可直接佐證：
+
+- `@cocos/creator-types/.../scene-facade-interface.d.ts:773` → `applyPrefab(nodeUuid: string): Promise<boolean>`
+- `@cocos/creator-types/.../cce/3d/manager/prefab/index.d.ts:52` → `applyPrefab(nodeUUID: string): Promise<boolean>`
+- 同檔 `:39` → `revertPrefab(nodeUUID: Node | string): Promise<boolean>`
+
+傳物件**不會拋錯**，promise 照樣 resolve，於是 `.then()` 無條件回 `{ success: true }`，但磁碟上的 `.prefab` 完全沒變。編輯器 project log 也沒有任何對應紀錄 —— 從 log 完全看不出來，是徹底的靜默假成功。
+
+### 附帶陷阱：回傳值不可作為成功判準
+`cce.Prefab.applyPrefab()` **成功時也可能回傳 `false`**。本專案實測即是回 `false` 但檔案確實寫入。若修完改用回傳值判定，會從「假成功」變成「假失敗」。
+
+### 修法（已實作，2026-09-16）
+1. 兩處都改傳字串：`Editor.Message.request('scene', 'apply-prefab', nodeUuid)`
+2. 成功判準改為**磁碟證據**：新增 `readPrefabFileSnapshot()` / `waitForPrefabWrite()`，以 `assetInfo.file` 的 `mtimeMs` / `size` 於 apply 前後比對，輪詢間隔 `PREFAB_WRITE_POLL_INTERVAL_MS = 100`、上限 `PREFAB_WRITE_TIMEOUT_MS = 3000`（寫盤為非同步，不能立刻讀）。逾時未變動即回 `success: false`，並提示檢查節點是否為已連結的 prefab 實例。
+3. 成功時 `data` 附上 `file` / `sizeBefore` / `sizeAfter` / `mtimeAfter` 作為證據。
+
+`restore-prefab`（`prefab-tools.ts` 與 `scene-advanced-tools.ts` 各一處）用的是 `(nodeUuid, assetUuid)` 兩個位置參數，對應 `restorePrefab(uuid, assetUuid)`，**格式正確、未更動**。
+
+### 驗證（2026-09-16，MCPCocosDemo）
+以 `db://assets/prefabs/SpriteFrameAnimTest.prefab` 實測（基準 3544 bytes / 188 行）：
+
+| 呼叫方式 | 回傳 | 磁碟 |
+|---------|------|------|
+| 舊碼（傳物件） | `success: true` | 3544 bytes / 188 行、mtime 未動、無 `BugProbeChild` ❌ |
+| 修正後（傳 uuid 字串） | `false` | 4549 bytes / 247 行、mtime 更新、`BugProbeChild` 已寫入 ✅ |
+
+測試後已還原 prefab 至原始 3544 bytes / 188 行並 `reimport_asset`，場景測試節點已刪除。
+
+> 回報來源：另一個 session 於 `D:\treasureofdragon\Model.Cocos`（Creator 3.8.8）踩到，重現兩次、非偶發，第一輪建的 33 個節點全部白做。本專案（Creator 3.8.3+）亦完整重現。
 
 ---
 
