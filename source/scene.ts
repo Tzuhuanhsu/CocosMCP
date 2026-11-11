@@ -387,6 +387,62 @@ export const methods: { [key: string]: (...any: any) => any } = {
     },
 
     /**
+     * 把预制体实例还原为资产的原始状态，丢弃实例上的本地修改。
+     *
+     * 编辑器**没有** `scene - revert-prefab` 这个 message（实测回报
+     * "Message does not exist"），只能在 scene 进程内直接呼叫 `cce.Prefab.revertPrefab()`，
+     * 与 createPrefabFromNode 走同一条 execute-scene-script 路径。
+     *
+     * 注意：还原的是子节点与元件属性等预制体内容；实例根节点的 transform
+     * （position/rotation/scale）依设计保留，不会被还原。
+     */
+    async revertPrefabInstance(nodeUuid: string) {
+        try {
+            const { director } = require('cc');
+            const cce = (globalThis as any).cce;
+
+            const scene = director.getScene();
+            if (!scene) {
+                return { success: false, error: 'No active scene' };
+            }
+            // 与 createPrefabFromNode 同：节点可能位于场景深层，需递归查找
+            const findNode = (n: any): any => {
+                if (n.uuid === nodeUuid) return n;
+                for (const child of n.children) {
+                    const found = findNode(child);
+                    if (found) return found;
+                }
+                return null;
+            };
+            const node = findNode(scene);
+            if (!node) {
+                return { success: false, error: `Node with UUID ${nodeUuid} not found` };
+            }
+            if (!node._prefab || !node._prefab.instance) {
+                return { success: false, error: `Node '${node.name}' is not a linked prefab instance (_prefab.instance is null)` };
+            }
+            if (!cce || !cce.Prefab || typeof cce.Prefab.revertPrefab !== 'function') {
+                return { success: false, error: 'cce.Prefab.revertPrefab 不可用（需在 scene 进程执行）' };
+            }
+
+            const reverted = await cce.Prefab.revertPrefab(nodeUuid);
+
+            return {
+                success: true,
+                data: {
+                    nodeUuid,
+                    nodeName: node.name,
+                    reverted,
+                    childCount: node.children.length,
+                    message: `Prefab instance '${node.name}' reverted`
+                }
+            };
+        } catch (error: any) {
+            return { success: false, error: error.message, stack: error.stack };
+        }
+    },
+
+    /**
      * Set component property
      */
     setComponentProperty(nodeUuid: string, componentType: string, property: string, value: any) {

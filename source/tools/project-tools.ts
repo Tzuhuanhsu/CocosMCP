@@ -1,8 +1,37 @@
 import { ToolDefinition, ToolResponse, ToolExecutor, ProjectInfo, AssetInfo } from '../types';
 import * as fs from 'fs';
 import * as path from 'path';
+import { spawn } from 'child_process';
+
+/** Exit code CocosCreator.exe returns when a command-line build succeeds (32 / 34 mean failure). */
+const CLI_BUILD_SUCCESS_EXIT_CODE = 36;
+const BUILD_STATUS_RUNNING = 'running';
+const BUILD_STATUS_SUCCESS = 'success';
+const BUILD_STATUS_FAILED = 'failed';
+const DEFAULT_BUILD_LOG_TAIL_LINES = 20;
+const DEFAULT_BUILD_PLATFORM = 'web-mobile';
+const BUILD_OUTPUT_NAME_PATTERN = /^[\w.-]+$/;
+const SCENE_ASSET_TYPE = 'cc.SceneAsset';
+
+type BuildStatus = typeof BUILD_STATUS_RUNNING | typeof BUILD_STATUS_SUCCESS | typeof BUILD_STATUS_FAILED;
+
+interface BuildRecord {
+    status: BuildStatus;
+    platform: string;
+    outputPath: string;
+    buildParams: string;
+    logPath: string;
+    pid: number | undefined;
+    exitCode: number | null;
+    error: string | null;
+    startedAt: number;
+    finishedAt: number | null;
+}
 
 export class ProjectTools implements ToolExecutor {
+    /** The build started by build_project since the extension loaded; null until the first build. */
+    private currentBuild: BuildRecord | null = null;
+
     getTools(): ToolDefinition[] {
         return [
             {
@@ -22,22 +51,45 @@ export class ProjectTools implements ToolExecutor {
             },
             {
                 name: 'build_project',
-                description: 'Build the project',
+                description: 'Start a command-line build (CocosCreator.exe --build) in a background process and return immediately. A build takes several minutes; poll get_build_status until status is no longer "running". Only one build can run at a time.',
                 inputSchema: {
                     type: 'object',
                     properties: {
                         platform: {
                             type: 'string',
                             description: 'Build platform',
-                            enum: ['web-mobile', 'web-desktop', 'ios', 'android', 'windows', 'mac']
+                            enum: [DEFAULT_BUILD_PLATFORM],
+                            default: DEFAULT_BUILD_PLATFORM
+                        },
+                        startScene: {
+                            type: 'string',
+                            description: 'Start scene as a db:// url (e.g. "db://assets/scene/main.scene") or a scene uuid'
                         },
                         debug: {
                             type: 'boolean',
-                            description: 'Debug build',
+                            description: 'Debug build (no minify, with source maps)',
                             default: true
+                        },
+                        outputName: {
+                            type: 'string',
+                            description: 'Output folder name under <project>/build; defaults to the platform name (overwrites the previous build there)'
                         }
                     },
-                    required: ['platform']
+                    required: ['startScene']
+                }
+            },
+            {
+                name: 'get_build_status',
+                description: 'Get the status of the build started by build_project: running / success / failed, exit code, elapsed time, output folder, log file path and the last log lines',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        tailLines: {
+                            type: 'number',
+                            description: 'Number of trailing log lines to include',
+                            default: DEFAULT_BUILD_LOG_TAIL_LINES
+                        }
+                    }
                 }
             },
             {
@@ -397,6 +449,8 @@ export class ProjectTools implements ToolExecutor {
                 return await this.runProject(args.platform);
             case 'build_project':
                 return await this.buildProject(args);
+            case 'get_build_status':
+                return this.getBuildStatus(args.tailLines);
             case 'get_project_info':
                 return await this.getProjectInfo();
             case 'get_project_settings':
@@ -466,30 +520,113 @@ export class ProjectTools implements ToolExecutor {
         });
     }
 
-    private async buildProject(args: any): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            const buildOptions = {
-                platform: args.platform,
-                debug: args.debug !== false,
-                sourceMaps: args.debug !== false,
-                buildPath: `build/${args.platform}`
-            };
+    /**
+     * Spawns a second CocosCreator.exe in command-line build mode against this project.
+     * Runs alongside the open editor; the result is tracked in this.currentBuild.
+     */
+    private async buildProject( args: any ): Promise<ToolResponse> {
+        if ( this.currentBuild && this.currentBuild.status === BUILD_STATUS_RUNNING ) {
+            return { success: false, error: 'A build is already running', data: this.describeBuild( this.currentBuild, 0 ) };
+        }
 
-            // Note: Builder module only supports 'open' and 'query-worker-ready'
-            // Building requires manual interaction through the build panel
-            Editor.Message.request('builder', 'open').then(() => {
-                resolve({
-                    success: true,
-                    message: `Build panel opened for ${args.platform}. Please configure and start build manually.`,
-                    data: { 
-                        platform: args.platform,
-                        instruction: "Use the build panel to configure and start the build process"
-                    }
-                });
-            }).catch((err: Error) => {
-                resolve({ success: false, error: err.message });
-            });
-        });
+        const platform: string = args.platform || DEFAULT_BUILD_PLATFORM;
+        const debug = args.debug !== false;
+        const outputName: string = args.outputName || platform;
+        if ( !BUILD_OUTPUT_NAME_PATTERN.test( outputName ) ) {
+            return { success: false, error: `Invalid outputName "${ outputName }": only letters, digits, "_", "-", "." are allowed` };
+        }
+
+        const sceneUuid = await this.resolveSceneUuid( args.startScene );
+        if ( !sceneUuid ) {
+            return { success: false, error: `Start scene not found: ${ args.startScene }` };
+        }
+
+        const projectPath = Editor.Project.path;
+        const logDir = path.join( projectPath, 'temp', 'mcp-build' );
+        fs.mkdirSync( logDir, { recursive: true } );
+        const startedAt = Date.now();
+        const logPath = path.join( logDir, `${ outputName }-${ startedAt }.log` );
+        const buildParams = `platform=${ platform };debug=${ debug };outputName=${ outputName };startScene=${ sceneUuid }`;
+        const logStream = fs.createWriteStream( logPath );
+        const child = spawn( process.execPath, [ '--project', projectPath, '--build', buildParams ], {
+            cwd: projectPath,
+            windowsHide: true
+        } );
+
+        const build: BuildRecord = {
+            status: BUILD_STATUS_RUNNING,
+            platform,
+            outputPath: path.join( projectPath, 'build', outputName ),
+            buildParams,
+            logPath,
+            pid: child.pid,
+            exitCode: null,
+            error: null,
+            startedAt,
+            finishedAt: null
+        };
+        this.currentBuild = build;
+
+        child.stdout.pipe( logStream, { end: false } );
+        child.stderr.pipe( logStream, { end: false } );
+        child.on( 'error', ( err: Error ) => {
+            build.status = BUILD_STATUS_FAILED;
+            build.error = err.message;
+            build.finishedAt = Date.now();
+            logStream.end();
+        } );
+        child.on( 'close', ( code: number | null ) => {
+            build.exitCode = code;
+            build.status = code === CLI_BUILD_SUCCESS_EXIT_CODE ? BUILD_STATUS_SUCCESS : BUILD_STATUS_FAILED;
+            build.finishedAt = Date.now();
+            logStream.end();
+        } );
+
+        return {
+            success: true,
+            message: `Build started for ${ platform }. Poll get_build_status until status is no longer "running".`,
+            data: this.describeBuild( build, 0 )
+        };
+    }
+
+    /** Accepts a scene uuid or a db:// url; returns the uuid, or null when no such scene asset exists. */
+    private async resolveSceneUuid( startScene: string ): Promise<string | null> {
+        const uuid: string | null = startScene.startsWith( 'db://' )
+            ? await Editor.Message.request( 'asset-db', 'query-uuid', startScene )
+            : startScene;
+        if ( !uuid ) {
+            return null;
+        }
+        const info = await Editor.Message.request( 'asset-db', 'query-asset-info', uuid );
+        return info && info.type === SCENE_ASSET_TYPE ? uuid : null;
+    }
+
+    private getBuildStatus( tailLines: number = DEFAULT_BUILD_LOG_TAIL_LINES ): ToolResponse {
+        if ( !this.currentBuild ) {
+            return { success: true, data: { status: 'none', message: 'No build has been started since the extension loaded' } };
+        }
+        return { success: true, data: this.describeBuild( this.currentBuild, tailLines ) };
+    }
+
+    private describeBuild( build: BuildRecord, tailLines: number ): Record<string, any> {
+        const endTime = build.finishedAt || Date.now();
+        const data: Record<string, any> = {
+            status: build.status,
+            platform: build.platform,
+            outputPath: build.outputPath,
+            buildParams: build.buildParams,
+            logPath: build.logPath,
+            pid: build.pid,
+            exitCode: build.exitCode,
+            error: build.error,
+            startedAt: new Date( build.startedAt ).toISOString(),
+            elapsedSeconds: Math.round( ( endTime - build.startedAt ) / 1000 )
+        };
+        if ( tailLines > 0 && fs.existsSync( build.logPath ) ) {
+            const lines = fs.readFileSync( build.logPath, 'utf8' ).split( /\r?\n/ ).filter( ( line ) => line.trim() !== '' );
+            data.logTail = lines.slice( -tailLines );
+        }
+        return data;
     }
 
     private async getProjectInfo(): Promise<ToolResponse> {

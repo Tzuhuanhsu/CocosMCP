@@ -621,19 +621,41 @@ Run the project in preview mode
 ```
 
 ### 5.2 project_build_project
-Build the project
+Start a command-line build (`CocosCreator.exe --project <project> --build ...`) in a background process and return immediately. A build takes several minutes; poll `project_get_build_status` until status is no longer `running`. Only one build can run at a time; calling again while one is running returns `success: false` with the current status.
 
 **Parameters**:
-- `platform` (string, required): Build platform, options: `web-mobile`, `web-desktop`, `ios`, `android`, `windows`, `mac`
-- `debug` (boolean, optional): Whether to build in debug mode, defaults to true
+- `startScene` (string, required): Start scene as a `db://` url (e.g. `db://assets/scene/main.scene`) or a scene uuid; returns an error if not found or not a scene asset (`cc.SceneAsset`)
+- `platform` (string, optional): Build platform; only `web-mobile` (default) is available — native platforms need SDK setup and are not verified
+- `debug` (boolean, optional): Debug build (no minify, with source maps), defaults to true
+- `outputName` (string, optional): Output folder name under `<project>/build/`, defaults to the platform name; letters, digits, `_`, `-`, `.` only; overwrites the previous build there
+
+The build log is written to `<project>/temp/mcp-build/<outputName>-<timestamp>.log`. CLI exit code 36 means success; any other code (e.g. 32 / 34) means failure.
 
 **Example**:
 ```json
 {
   "tool": "project_build_project",
   "arguments": {
-    "platform": "web-mobile",
-    "debug": false
+    "startScene": "db://assets/scene/main.scene",
+    "debug": true
+  }
+}
+```
+
+### 5.2.1 project_get_build_status
+Get the status of the build started by `project_build_project`
+
+**Parameters**:
+- `tailLines` (number, optional): Number of trailing non-empty log lines to include, defaults to 20
+
+**Returns**: `status` (`none` / `running` / `success` / `failed`), `platform`, `outputPath`, `buildParams`, `logPath`, `pid`, `exitCode`, `error`, `startedAt`, `elapsedSeconds`, `logTail`
+
+**Example**:
+```json
+{
+  "tool": "project_get_build_status",
+  "arguments": {
+    "tailLines": 20
   }
 }
 ```

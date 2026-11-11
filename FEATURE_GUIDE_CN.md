@@ -621,19 +621,41 @@ MCP 服务器提供了 **158 个工具**，按功能分为 13 个主要类别：
 ```
 
 ### 5.2 project_build_project
-构建项目
+以命令列（`CocosCreator.exe --project <项目> --build ...`）在背景进程启动构建并立即返回。构建约需数分钟，请以 `project_get_build_status` 轮询直到 status 不再是 `running`。同一时间只允许一个构建，构建中再次调用会返回 `success: false` 并附当前状态。
 
 **参数**:
-- `platform` (string, 必需): 构建平台，可选值：`web-mobile`、`web-desktop`、`ios`、`android`、`windows`、`mac`
-- `debug` (boolean, 可选): 是否调试构建，默认为 true
+- `startScene` (string, 必需): 起始场景，可传 `db://` url（如 `db://assets/scene/main.scene`）或场景 uuid；找不到或不是场景资源（`cc.SceneAsset`）时返回错误
+- `platform` (string, 可选): 构建平台，目前仅开放 `web-mobile`（默认）；原生平台需 SDK 设置，尚未验证
+- `debug` (boolean, 可选): 是否调试构建（不压缩、含 source map），默认为 true
+- `outputName` (string, 可选): `<项目>/build/` 下的输出文件夹名，默认等于 platform，仅允许字母、数字、`_`、`-`、`.`；会覆盖上次的构建
+
+构建日志写入 `<项目>/temp/mcp-build/<outputName>-<时间戳>.log`。CLI 结束码 36 视为成功，其他（如 32／34）视为失败。
 
 **示例**:
 ```json
 {
   "tool": "project_build_project",
   "arguments": {
-    "platform": "web-mobile",
-    "debug": false
+    "startScene": "db://assets/scene/main.scene",
+    "debug": true
+  }
+}
+```
+
+### 5.2.1 project_get_build_status
+查询 `project_build_project` 启动的构建状态
+
+**参数**:
+- `tailLines` (number, 可选): 附带的日志末尾非空行数，默认为 20
+
+**返回**: `status`（`none`／`running`／`success`／`failed`）、`platform`、`outputPath`、`buildParams`、`logPath`、`pid`、`exitCode`、`error`、`startedAt`、`elapsedSeconds`、`logTail`
+
+**示例**:
+```json
+{
+  "tool": "project_get_build_status",
+  "arguments": {
+    "tailLines": 20
   }
 }
 ```

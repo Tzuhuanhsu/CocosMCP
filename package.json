@@ -152,6 +152,7 @@
                 "getCurrentSceneInfo",
                 "getSceneHierarchy",
                 "createPrefabFromNode",
+                "revertPrefabInstance",
                 "executeScript"
             ]
         }

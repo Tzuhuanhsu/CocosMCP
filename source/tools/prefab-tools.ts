@@ -1,4 +1,15 @@
+import * as fs from 'fs';
 import { ToolDefinition, ToolResponse, ToolExecutor, PrefabInfo } from '../types';
+
+/** 预制体写盘为异步，轮询磁碟变更的间隔与上限 */
+const PREFAB_WRITE_POLL_INTERVAL_MS = 100;
+const PREFAB_WRITE_TIMEOUT_MS = 3000;
+
+/** 用于判定预制体是否真的被写入磁碟的档案快照 */
+interface PrefabFileSnapshot {
+    mtimeMs: number;
+    size: number;
+}
 
 export class PrefabTools implements ToolExecutor {
     getTools(): ToolDefinition[] {
@@ -428,41 +439,101 @@ export class PrefabTools implements ToolExecutor {
 
 
 
-    private async updatePrefab(prefabPath: string, nodeUuid: string): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            Editor.Message.request('asset-db', 'query-asset-info', prefabPath).then((assetInfo: any) => {
-                if (!assetInfo) {
-                    throw new Error('Prefab not found');
-                }
+    /**
+     * 读取预制体档案快照；档案不存在或无法存取时回传 null。
+     */
+    private readPrefabFileSnapshot(filePath: string): PrefabFileSnapshot | null {
+        try {
+            const stat = fs.statSync(filePath);
+            return { mtimeMs: stat.mtimeMs, size: stat.size };
+        } catch {
+            return null;
+        }
+    }
 
-                return Editor.Message.request('scene', 'apply-prefab', {
-                    node: nodeUuid,
-                    prefab: assetInfo.uuid
-                });
-            }).then(() => {
-                resolve({
-                    success: true,
-                    message: 'Prefab updated successfully'
-                });
-            }).catch((err: Error) => {
-                resolve({ success: false, error: err.message });
-            });
-        });
+    /**
+     * 等待预制体档案实际被写入磁碟。
+     *
+     * `cce.Prefab.applyPrefab()` 成功时也可能回传 false，回传值不可作为成功判准，
+     * 因此改以档案的 mtime / size 是否变动判定，并回传新的快照供上层附上证据。
+     */
+    private async waitForPrefabWrite(filePath: string, before: PrefabFileSnapshot | null): Promise<PrefabFileSnapshot | null> {
+        const deadline = Date.now() + PREFAB_WRITE_TIMEOUT_MS;
+
+        while (Date.now() < deadline) {
+            const current = this.readPrefabFileSnapshot(filePath);
+            if (current && (!before || current.mtimeMs !== before.mtimeMs || current.size !== before.size)) {
+                return current;
+            }
+            await new Promise((resolve) => setTimeout(resolve, PREFAB_WRITE_POLL_INTERVAL_MS));
+        }
+
+        return null;
+    }
+
+    private async updatePrefab(prefabPath: string, nodeUuid: string): Promise<ToolResponse> {
+        try {
+            const assetInfo = await Editor.Message.request('asset-db', 'query-asset-info', prefabPath);
+            if (!assetInfo) {
+                throw new Error('Prefab not found');
+            }
+
+            const filePath: string = assetInfo.file;
+            const before = this.readPrefabFileSnapshot(filePath);
+
+            // 关键：scene facade 的 applyPrefab(nodeUuid) 只收「节点 uuid 字串」一个参数。
+            // 传物件不会抛错、promise 照样 resolve，但磁碟完全没写 —— 会造成静默的假成功。
+            await (Editor.Message.request as any)('scene', 'apply-prefab', nodeUuid);
+
+            const after = await this.waitForPrefabWrite(filePath, before);
+            if (!after) {
+                return {
+                    success: false,
+                    error: `Prefab was not written to disk within ${PREFAB_WRITE_TIMEOUT_MS}ms: ${prefabPath}. `
+                        + 'Check that the node is a linked prefab instance (its _prefab must not be null).'
+                };
+            }
+
+            return {
+                success: true,
+                message: 'Prefab updated successfully',
+                data: {
+                    prefabPath,
+                    file: filePath,
+                    sizeBefore: before ? before.size : null,
+                    sizeAfter: after.size,
+                    mtimeAfter: new Date(after.mtimeMs).toISOString()
+                }
+            };
+        } catch (err: any) {
+            return { success: false, error: err.message };
+        }
     }
 
     private async revertPrefab(nodeUuid: string): Promise<ToolResponse> {
-        return new Promise((resolve) => {
-            Editor.Message.request('scene', 'revert-prefab', {
-                node: nodeUuid
-            }).then(() => {
-                resolve({
-                    success: true,
-                    message: 'Prefab instance reverted successfully'
-                });
-            }).catch((err: Error) => {
-                resolve({ success: false, error: err.message });
+        try {
+            // 编辑器没有 `scene - revert-prefab` 这个 message（旧码呼叫它一律得到
+            // "Message does not exist"），必须在 scene 进程内直接呼叫 cce.Prefab.revertPrefab()，
+            // 与 create_prefab 走同一条 execute-scene-script 路径。
+            const result: any = await Editor.Message.request('scene', 'execute-scene-script', {
+                name: 'cocos-mcp-server',
+                method: 'revertPrefabInstance',
+                args: [nodeUuid]
             });
-        });
+
+            if (!result || !result.success) {
+                const detail = result?.stack ? `${result.error}\n${result.stack}` : (result?.error || '还原预制体实例失败');
+                return { success: false, error: detail };
+            }
+
+            return {
+                success: true,
+                message: 'Prefab instance reverted successfully',
+                data: result.data
+            };
+        } catch (err: any) {
+            return { success: false, error: err.message };
+        }
     }
 
     private async getPrefabInfo(prefabPath: string): Promise<ToolResponse> {
