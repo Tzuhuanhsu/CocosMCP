@@ -184,7 +184,7 @@ const v = new Vue( {
             if ( this.mode == 2 && setting.customUrl ) return setting.customUrl;
             let page = '';
             if ( this.mode > 0 ) {
-                page = this.mode == 1 ? 'web-mobile/web-mobile/index.html' : 'web-desktop/web-desktop/index.html';
+                page = this.mode == 1 ? 'build/web-mobile/index.html' : 'build/web-desktop/index.html';
             }
             const params = this.urlParams.trim();
             if ( params !== '' ) page += params.startsWith( '?' ) ? params : '?' + params;
