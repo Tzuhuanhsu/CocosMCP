@@ -22,6 +22,8 @@ interface CdpRequest {
     id: number;
     method: string;
     params?: Record<string, unknown>;
+    /** Set when the command targets a child target (e.g. an out-of-process iframe) under flatten auto-attach. */
+    sessionId?: string;
 }
 
 interface Bridge {
@@ -129,7 +131,10 @@ function handleConnection( bridge: Bridge, game: WebContents, socket: Socket, lo
             close();
         }
     };
-    const onDebuggerMessage = ( _event: unknown, method: string, params: unknown ): void => send( { method, params } );
+    // sessionId must round-trip: DevTools auto-attaches child targets (OOPIFs) with waitForDebuggerOnStart,
+    // and a child only resumes when Runtime.runIfWaitingForDebugger reaches its own session.
+    const onDebuggerMessage = ( _event: unknown, method: string, params: unknown, sessionId?: string ): void =>
+        send( sessionId ? { method, params, sessionId } : { method, params } );
     const onDebuggerDetach = (): void => {
         close();
         try { socket.end(); } catch { /* already gone */ }
@@ -155,11 +160,13 @@ function handleConnection( bridge: Bridge, game: WebContents, socket: Socket, lo
         } catch {
             return;
         }
-        game.debugger.sendCommand( request.method, request.params ?? {} ).then(
-            ( result ) => send( { id: request.id, result: result ?? {} } ),
+        const sessionId = request.sessionId;
+        game.debugger.sendCommand( request.method, request.params ?? {}, sessionId ).then(
+            ( result ) => send( { id: request.id, result: result ?? {}, sessionId } ),
             ( error: unknown ) => send( {
                 id: request.id,
                 error: { code: -32000, message: String( ( error as Error )?.message ?? error ) },
+                sessionId,
             } )
         );
     }, close );
